@@ -1,0 +1,20 @@
+{
+  "name": "tiny-vj",
+  "version": "1.0.0",
+  "description": "Toddler-proof kiosk VJ: a groove, a light show, and a keyboard to jam on",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "electron scripts/logic-test.cjs",
+    "test:kiosk": "node scripts/kiosk-test.cjs",
+    "package": "node scripts/package.mjs"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.4.1"
+  }
+}

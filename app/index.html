@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'">
+<title>Tiny VJ</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #000;
+    cursor: none;
+    user-select: none;
+  }
+  canvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    image-rendering: pixelated;
+    cursor: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script src="sound.js"></script>
+<script src="vj.js"></script>
+</body>
+</html>

@@ -1,0 +1,74 @@
+# Tiny VJ Kiosk
+
+Toddler-proof Electron kiosk: an always-playing groove, a self-drawing pixel light show, and a
+keyboard to jam on. Inspired by *Kawasaki Rhythm Rocker* (C64, 1984). Sibling of
+`~/Documents/tiny-draw-kiosk`, whose kiosk shell (`main.js`, `preload.js`, packaging, kiosk test)
+this one copies.
+
+## Files
+| File | Responsibility |
+|------|----------------|
+| `main.js` | Electron main process: kiosk window, key swallowing + forwarding, exit handling |
+| `preload.js` | Exposes `kiosk.onKeyDown` — the page's only source of keyboard input |
+| `app/sound.js` | Web Audio SID-style voices, drum kit, grooves, sequencer, live-note quantizing |
+| `app/vj.js` | Palette, polyspiral drawing, keyboard / Sound Graph panel, visitors, input, state probe |
+| `app/index.html` | Canvas + hidden-cursor styles; loads `sound.js` then `vj.js` (shared globals) |
+| `scripts/package.mjs` | Local ad-hoc signing and optional Developer ID signing / notarization |
+| `scripts/logic-test.cjs` | Groove, key, mouse and light-show checks in a hidden window |
+| `scripts/kiosk-test.cjs` | Full-screen kiosk checks: real key path, pointer lock, focus, exit |
+
+## Run / build
+- `npm start` — run in dev via `electron .`
+- `npm test` — checks in a hidden window; never takes focus. Takes ~15s because the groove runs in
+  real time. Run it after every change.
+- `npm run test:kiosk` — takes over the screen for ~10s. Only for changes to `main.js`,
+  `preload.js`, or pointer-lock / focus handling, and ask Damon before running it.
+- `npm run package` — build `build/current/TinyVJ-darwin-arm64/TinyVJ.app` (arm64). `build/` is
+  gitignored.
+
+## Behaviour
+- Key map and mouse behaviour: see the README table — keep it in sync with `onKey` in `app/vj.js`.
+- The groove is always on from launch — a settled decision (unlike Tiny Draw, which has no idle
+  motion). The drawing draws itself and is replaced every `DRAWING_STEPS` sixteenths.
+- Every key makes a sound; keys without a musical job blip. `npm test` checks this.
+- Palette is Tiny Draw's bright OKLCH wheel, not the C64's 16 colours — a settled decision.
+- Click toggles freeze: the drawing stops and scrolls sideways (the original's Z then M).
+
+## Design notes
+- **Rhythm Rocker canon vs. toddler adaptations.** From the original manual: always-on bass and
+  drums, piano rows, percussion keys, space visitors, pitch bend / vibrato-roll / sustain on
+  Space / Shift / Shift-Lock, four grooves on F-keys, tempo on cursor keys, auto-drawing with
+  angle/size/width, stop + scroll, Rainbow, Sound Graph. Adaptations: no modes (each keyboard row
+  is one of the original's modes), pentatonic instead of chromatic, live notes quantized to
+  sixteenths (the original quantized recordings), no recording/dubbing/disk. Expand Color is not
+  implemented yet.
+- **Audio is scheduled ahead; visuals follow it.** The sequencer schedules ~120ms ahead and pushes
+  `soundEvents`; `update()` in `vj.js` handles each event once `audio.currentTime` reaches it, so a
+  flash lands with its sound. Live notes go to `nextGridTime()`.
+- **Pulse waves** are a sawtooth minus a delayed copy of itself; the delay sets the duty cycle and
+  an LFO on it gives pulse-width modulation.
+- **Hearing safety:** `MASTER_VOLUME` plus a hard limiter; at most `MAX_SYNTH_VOICES` live synth
+  notes, oldest stolen.
+- **Flashing:** only the border changes colour on the beat; Rainbow shifts hue one wheel step per
+  sixteenth rather than strobing. Keep any new effect off full-screen luminance flashes.
+- **Colour indices** everywhere (drawing and frame) are 0 = black or 1 + wheel index relative to
+  `cycleOffset`, so the wheel and Rainbow recolour everything at once.
+- **Keys arrive only as key-downs** (main forwards no key-ups), so notes have fixed lengths and
+  Space/Shift act as one-shot gestures.
+- State probe: `window.render_game_to_text()` (processes due events first) and `window.__TV`
+  (`state`, `sequencer`, `counts`, `colorAt`, `palette`).
+
+## Exit and containment
+- **Exit = type `exitnow`** (`EXIT_PHRASE` in `main.js`). **Force-kill = `pkill -9 -f TinyVJ`.**
+- Known failure modes of chords, `app.quit()`, media keys and the Spotlight key are documented in
+  `~/Documents/tiny-terminal-kiosk/CLAUDE.md`; pointer-lock and Escape details in
+  `~/Documents/tiny-draw-kiosk/CLAUDE.md`. They apply unchanged here.
+
+## Testing gotchas
+- `npm test` sends keys straight to the page's `key-down` IPC handler, skipping
+  `before-input-event`; the kiosk test covers that route.
+- Live notes are quantized, so their counters update immediately but `lastHz` (per voice) is set at
+  schedule time too; visual effects (visitors, Sound Graph shapes) appear only once the note's time
+  arrives — poll with `waitFor`, don't assert right after a key.
+- `open <app>` re-activates a running instance. `pkill -9` first, then launch
+  `TinyVJ.app/Contents/MacOS/TinyVJ` directly.
