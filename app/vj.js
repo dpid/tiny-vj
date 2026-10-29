@@ -2,7 +2,6 @@
 
 // About the C64's 320-pixel width, whatever the screen.
 const TARGET_COLS = 320;
-const BORDER_CELLS = 8;
 const PANEL_FRACTION = 0.3;
 const PANEL_GAP_CELLS = 3;
 
@@ -213,7 +212,6 @@ const state = {
   rainbow: false,
   panel: 'keyboard',
   cycleOffset: 0,
-  borderColor: 0,
   lit: new Map(),
   visitors: [],
   shapes: [],
@@ -249,16 +247,14 @@ function resize() {
   const cellSize = Math.max(1, Math.round(window.innerWidth / TARGET_COLS));
   const cols = Math.ceil(window.innerWidth / cellSize);
   const rows = Math.ceil(window.innerHeight / cellSize);
-  const innerW = cols - 2 * BORDER_CELLS;
-  const innerH = rows - 2 * BORDER_CELLS;
-  const panelH = Math.floor(innerH * PANEL_FRACTION);
+  const panelH = Math.floor(rows * PANEL_FRACTION);
   Object.assign(state, {
     cellSize,
     cols,
     rows,
     frame: new Uint8Array(cols * rows),
-    drawArea: { x: BORDER_CELLS, y: BORDER_CELLS, w: innerW, h: innerH - panelH - PANEL_GAP_CELLS },
-    panelArea: { x: BORDER_CELLS, y: BORDER_CELLS + innerH - panelH, w: innerW, h: panelH },
+    drawArea: { x: 0, y: 0, w: cols, h: rows - panelH - PANEL_GAP_CELLS },
+    panelArea: { x: 0, y: rows - panelH, w: cols, h: panelH },
   });
   // Under pointer lock clientX/Y stay frozen (often at 0,0), so start in the middle.
   state.pointer ??= { x: window.innerWidth / 2, y: window.innerHeight / 2 };
@@ -316,7 +312,6 @@ function drawSegment() {
 }
 
 function onStep(step) {
-  if (step % STEPS_PER_BEAT === 0) state.borderColor = mod(state.borderColor + KEY_STRIDE, WHEEL_SIZE);
   if (state.rainbow) state.cycleOffset = mod(state.cycleOffset + 1, WHEEL_SIZE);
   if (state.frozen) {
     // The original's scroll (M): a stopped drawing slides across the screen.
@@ -359,15 +354,12 @@ function spawnShape(event, color, now) {
 
 function onSound(event, now) {
   const keyColor = event.tag ? wheelIndexForKey(event.tag) : null;
-  const color = keyColor ?? (event.hz ? wheelIndexForHz(event.hz) : state.borderColor);
+  const color = keyColor ?? (event.hz ? wheelIndexForHz(event.hz) : wheelIndexForKey(event.drum));
   spawnShape(event, color, now);
   switch (event.voice) {
     case 'synth':
       state.turtle.pen = keyColor;
       if (!state.frozen) drawSegment();
-      break;
-    case 'drum':
-      state.borderColor = keyColor;
       break;
     case 'visitor':
       spawnVisitor(event.index, keyColor, now);
@@ -453,7 +445,7 @@ function drawSoundGraph(now) {
 }
 
 function drawVisitors(now) {
-  const clip = { x: BORDER_CELLS, y: BORDER_CELLS, w: state.cols - 2 * BORDER_CELLS, h: state.rows - 2 * BORDER_CELLS };
+  const clip = { x: 0, y: 0, w: state.cols, h: state.rows };
   for (const visitor of state.visitors) {
     const age = (now - visitor.born) / VISITOR_SECONDS;
     const left = Math.round(visitor.fromX + (visitor.toX - visitor.fromX) * age);
@@ -484,8 +476,7 @@ function render() {
   update();
   const now = audio.currentTime;
   const { frame, cols, drawArea } = state;
-  frame.fill(state.borderColor + 1);
-  fillRect(BORDER_CELLS, BORDER_CELLS, cols - 2 * BORDER_CELLS, state.rows - 2 * BORDER_CELLS, 0, { x: 0, y: 0, w: cols, h: state.rows });
+  frame.fill(0);
   for (let y = 0; y < drawArea.h; y++) {
     const source = y * drawArea.w;
     const target = (drawArea.y + y) * cols + drawArea.x;
@@ -622,7 +613,6 @@ window.render_game_to_text = () => {
     drawingSteps: state.drawingSteps,
     painted: state.drawing.reduce((count, cell) => count + (cell ? 1 : 0), 0),
     turtle: { turn: state.turtle.turn, growth: state.turtle.growth, width: state.turtle.width },
-    borderColor: hex(WHEEL_RGB[mod(state.borderColor + state.cycleOffset, WHEEL_SIZE)]),
     lit: [...state.lit.keys()],
     visitors: state.visitors.length,
     shapes: state.shapes.length,

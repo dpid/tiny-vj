@@ -49,8 +49,8 @@ this one copies.
   an LFO on it gives pulse-width modulation.
 - **Hearing safety:** `MASTER_VOLUME` plus a hard limiter; at most `MAX_SYNTH_VOICES` live synth
   notes, oldest stolen.
-- **Flashing:** only the border changes colour on the beat; Rainbow shifts hue one wheel step per
-  sixteenth rather than strobing. Keep any new effect off full-screen luminance flashes.
+- **Flashing:** no border and no beat flash (removed at Damon's request); Rainbow shifts hue one
+  wheel step per sixteenth rather than strobing. Keep any new effect off full-screen luminance flashes.
 - **Colour indices** everywhere (drawing and frame) are 0 = black or 1 + wheel index relative to
   `cycleOffset`, so the wheel and Rainbow recolour everything at once.
 - **Keys arrive only as key-downs** (main forwards no key-ups), so notes have fixed lengths and

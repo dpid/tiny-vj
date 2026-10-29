@@ -8,7 +8,7 @@ adds a sound and a picture on top of it, and a chunky pixel drawing draws itself
 |-------|-------|---------|
 | Letter row (Q…\\) | Synth notes, higher to the right | The key lights up; the drawing takes its colour |
 | Number row (1…=) | Bell notes, an octave above the letter row | The key lights up; the drawing takes its colour |
-| Home row (A…') | Drums | The border flashes the key's colour |
+| Home row (A…') | Drums | The key lights up |
 | Bottom row (Z…/) | Space sounds | A space visitor flies across |
 | Space | Pitch bend (a boing if nothing is playing) | The drawing turns |
 | Shift | Drum roll on the last drum | — |
