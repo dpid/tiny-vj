@@ -28,6 +28,8 @@ const SYSTEM_SHORTCUTS = [
 
 const RECOVERY_INTERVAL_MS = 250;
 
+const MODIFIER_KEYS = ['Meta', 'Control', 'Alt', 'Shift'];
+
 // Pointer lock keeps the hidden OS cursor pinned, so it cannot reach Hot Corners
 // or wander onto another display. The page cannot request it itself: keys arrive
 // over IPC and mouse movement is not a user activation.
@@ -108,16 +110,27 @@ function createWindow() {
   win.on('leave-full-screen', () => setImmediate(restoreKiosk));
   recoveryTimer = setInterval(restoreKiosk, RECOVERY_INTERVAL_MS);
 
-  // The page never receives keyboard events directly: every key is swallowed here
-  // (so no Cmd/Ctrl/Opt combination can reach a browser default) and key-downs are
-  // forwarded over IPC. That is also what lets bare modifier keys make a sound.
+  // The page acts only on keys forwarded here over IPC, key-downs and key-ups (so a held
+  // synth key can sustain). Swallowing a key-down also makes Chromium drop its key-up,
+  // so plain key-downs pass through (vj.js blocks their defaults in the page). Only
+  // chords, which could reach a browser default, are swallowed; their key-up will
+  // never come, so the page gets one straight after the key-down.
   win.webContents.on('before-input-event', (event, input) => {
-    event.preventDefault();
+    const code = input.code || input.key;
+    const chord = (input.meta || input.control || input.alt) && !MODIFIER_KEYS.includes(input.key);
+    if (input.type !== 'keyDown' || chord) event.preventDefault();
+    if (input.type === 'keyUp' && input.key !== 'Escape') {
+      win.webContents.send('key-up', code);
+      return;
+    }
     // While the pointer is locked Chromium consumes Escape's key-down to release
     // the lock, so only its key-up arrives here. Acting on key-up works either way.
     if (input.type !== (input.key === 'Escape' ? 'keyUp' : 'keyDown')) return;
 
-    if (!input.isAutoRepeat) win.webContents.send('key-down', input.code || input.key);
+    if (!input.isAutoRepeat) {
+      win.webContents.send('key-down', code);
+      if (chord) win.webContents.send('key-up', code);
+    }
 
     if (input.key && input.key.length === 1 && !input.meta && !input.control && !input.alt) {
       typedBuffer = (typedBuffer + input.key.toLowerCase()).slice(-EXIT_PHRASE.length);
@@ -144,7 +157,11 @@ app.whenReady().then(() => {
   // Removing the menu strips every accelerator (Cmd+R/W/Q-as-menu-item, devtools, etc.).
   Menu.setApplicationMenu(null);
   for (const key of [...MEDIA_KEYS, ...SYSTEM_SHORTCUTS]) {
-    if (!globalShortcut.register(key, restoreKiosk)) {
+    // F3 and F4 pick grooves, so a claimed press is passed on to the page as well.
+    const handler = /^F\d+$/.test(key)
+      ? () => { restoreKiosk(); win?.webContents.send('key-down', key); }
+      : restoreKiosk;
+    if (!globalShortcut.register(key, handler)) {
       console.warn(`Could not intercept ${key}; macOS or another app may still handle it.`);
     }
   }

@@ -46,6 +46,8 @@ app.whenReady().then(async () => {
       }));
     }`);
     const press = async code => { win.webContents.send('key-down', code); await delay(IPC_SETTLE_MS); };
+    const lift = async code => { win.webContents.send('key-up', code); await delay(IPC_SETTLE_MS); };
+    const tap = async code => { await press(code); await lift(code); };
     const scroll = deltaY => js(`window.dispatchEvent(new WheelEvent('wheel', { deltaY: ${deltaY}, cancelable: true }))`);
     const probe = async () => JSON.parse(await js('render_game_to_text()'));
     const waitFor = async (condition) => {
@@ -71,19 +73,67 @@ app.whenReady().then(async () => {
     });
     check('the drawing draws itself', () => assert.ok(grooving.painted > 0));
 
-    await press('KeyQ');
+    await tap('KeyQ');
     const afterQ = await waitFor(s => s.counts.synth > grooving.counts.synth);
-    await press('KeyP');
+    await tap('KeyP');
     const afterP = await waitFor(s => s.counts.synth > afterQ.counts.synth);
     check('letter-row keys play synth notes, higher to the right', () => {
       assert.equal(afterP.counts.synth, grooving.counts.synth + 2);
       assert.ok(afterP.lastHz.synth > afterQ.lastHz.synth, `${afterQ.lastHz.synth} -> ${afterP.lastHz.synth}`);
     });
     check('a pressed key lights up on the keyboard', () => assert.ok(afterP.lit.includes('KeyP')));
-    await press('Digit1');
+    await tap('Digit1');
     const afterOne = await waitFor(s => s.counts.synth > afterP.counts.synth);
     check('the number row plays an octave above the letter row', () =>
       assert.equal(afterOne.lastHz.synth, Math.round(afterQ.lastHz.synth * 2)));
+
+    await press('KeyE');
+    const holding = await waitFor(s => s.floaters.some(f => f.code === 'KeyE' && f.rise > 2));
+    await delay(300);
+    const stillHolding = await probe();
+    check('holding a synth key sustains its note', () => assert.deepEqual(stillHolding.held, ['KeyE']));
+    check("a held key's outline floats up, higher the longer it's held", () => {
+      const [first, later] = [holding, stillHolding].map(s => s.floaters.find(f => f.code === 'KeyE'));
+      assert.ok(first && later && later.rise > first.rise, JSON.stringify([first, later]));
+    });
+    await lift('KeyE');
+    const letGo = await probe();
+    check('letting go releases the note with a quarter-second fade', () => {
+      assert.deepEqual(letGo.held, []);
+      assert.ok(letGo.ringingSeconds > 0.15 && letGo.ringingSeconds <= 0.35, `still ringing ${letGo.ringingSeconds}s`);
+    });
+    check('the outline lingers while it fades', () => assert.equal(letGo.floaters.length, 1));
+    await delay(400);
+    const released = await probe();
+    check('a quarter second later the note and its outline are gone', () => {
+      assert.equal(released.ringingSeconds, 0);
+      assert.deepEqual(released.floaters, []);
+    });
+
+    const beforeRepeat = await probe();
+    await press('KeyY');
+    await press('KeyY');
+    await press('KeyY');
+    const repeated = await probe();
+    check('key repeat while held does not restart the note', () => {
+      assert.equal(repeated.counts.synth, beforeRepeat.counts.synth + 1);
+      assert.equal(repeated.floaters.length, 1);
+    });
+    await lift('KeyY');
+    await waitFor(s => s.floaters.length === 0);
+    await press('KeyR');
+    await delay(400);
+    const ringing = await probe();
+    check('a held note keeps ringing', () => assert.deepEqual(ringing.held, ['KeyR']));
+    await js(`window.dispatchEvent(new Event('blur'))`);
+    const blurred = await waitFor(s => s.floaters.length === 0);
+    check('losing focus lets go of held notes', () => assert.deepEqual(blurred.held, []));
+    await press('MetaLeft');
+    await press('KeyT');
+    await lift('MetaLeft');
+    const cmdReleased = await waitFor(s => s.floaters.length === 0);
+    check('Cmd coming up lets go of notes whose key-ups macOS swallowed', () =>
+      assert.deepEqual(cmdReleased.held, []));
 
     await press('KeyA');
     const afterA = await probe();
@@ -101,8 +151,33 @@ app.whenReady().then(async () => {
 
     const beforeSpace = await probe();
     await press('Space');
-    const afterSpace = await probe();
-    check('Space bends (or boings)', () => assert.equal(afterSpace.counts.bend, beforeSpace.counts.bend + 1));
+    const wobbleAlone = await probe();
+    check('Space with no note sounding plays a wobble', () => {
+      assert.equal(wobbleAlone.counts.vibrato, beforeSpace.counts.vibrato + 1);
+      assert.ok(wobbleAlone.lastHz.vibrato > 0);
+    });
+    await lift('Space');
+    await press('KeyU');
+    await press('Space');
+    await delay(300);
+    const vibrating = await probe();
+    check('holding Space puts vibrato on a held note', () => {
+      assert.equal(vibrating.vibrato, true);
+      assert.ok(vibrating.vibratoCents > 30, `${vibrating.vibratoCents} cents`);
+      assert.deepEqual(vibrating.held, ['KeyU']);
+    });
+    await press('KeyI');
+    await lift('Space');
+    await delay(400);
+    const steady = await probe();
+    check('letting go of Space steadies the notes again', () => {
+      assert.equal(steady.vibrato, false);
+      assert.ok(steady.vibratoCents < 2, `${steady.vibratoCents} cents`);
+      assert.deepEqual(steady.held.sort(), ['KeyI', 'KeyU']);
+    });
+    await lift('KeyU');
+    await lift('KeyI');
+    const afterSpace = await waitFor(s => s.floaters.length === 0);
 
     await press('F2');
     const afterF2 = await probe();
@@ -110,25 +185,68 @@ app.whenReady().then(async () => {
       assert.equal(afterF2.groove, 'boogie');
       assert.notEqual(afterF2.bpm, afterSpace.bpm);
     });
-    await press('F5');
-    const afterF5 = await probe();
-    check('F5 picks the first groove again', () => assert.equal(afterF5.groove, 'funk'));
+    const picked = {};
+    for (const code of ['F5', 'F9', 'Numpad3', 'Numpad8']) {
+      await press(code);
+      picked[code] = (await probe()).groove;
+    }
+    check('F1–F9 and numpad 1–9 pick nine grooves', () => assert.deepEqual(picked, {
+      F5: 'reggae', F9: 'lullaby', Numpad3: 'waltz', Numpad8: 'bossa',
+    }));
+    await press('F10');
+    const afterF10 = await probe();
+    check('F10 leaves the groove alone', () => assert.equal(afterF10.groove, 'bossa'));
+
+    await press('F1');
+    const funk = await probe();
     for (let i = 0; i < 20; i++) await press('ArrowUp');
     const fast = await probe();
     for (let i = 0; i < 20; i++) await press('ArrowDown');
     const slow = await probe();
-    check('arrows change tempo within safe limits', () => {
-      assert.ok(fast.bpm > afterF5.bpm && slow.bpm < afterF5.bpm);
-      assert.ok(fast.bpm <= 140 && slow.bpm >= 80, `${slow.bpm}..${fast.bpm}`);
+    check('Up and Down change tempo within safe limits', () => {
+      assert.ok(fast.bpm > funk.bpm && slow.bpm < funk.bpm);
+      assert.ok(fast.bpm <= 140 && slow.bpm >= 60, `${slow.bpm}..${fast.bpm}`);
+      assert.equal(slow.transpose, 0);
     });
+    await press('F1');
+
+    await tap('KeyQ');
+    const plain = await waitFor(s => s.counts.synth > funk.counts.synth);
+    await press('ArrowRight');
+    await tap('KeyQ');
+    const raised = await waitFor(s => s.counts.synth > plain.counts.synth);
+    check('Right transposes everything up a semitone', () => {
+      assert.equal(raised.transpose, 1);
+      assert.equal(raised.lastHz.synth, Math.round(plain.lastHz.synth * 2 ** (1 / 12)));
+    });
+    for (let i = 0; i < 30; i++) await press('ArrowLeft');
+    const lowest = await probe();
+    check('Left transposes down, at most an octave', () => assert.equal(lowest.transpose, -12));
+    const beforeLowBass = lowest.counts.bass;
+    const lowBass = await waitFor(s => s.counts.bass > beforeLowBass);
+    check('the groove bass follows the transpose', () =>
+      assert.ok(lowBass.lastHz.bass < 80, `bass at ${lowBass.lastHz.bass}Hz`));
+    for (let i = 0; i < 12; i++) await press('ArrowRight');
+
+    const lines = [];
+    for (const code of ['Backquote', 'Numpad0', 'Backquote', 'Backquote', 'Backquote']) {
+      await press(code);
+      lines.push((await probe()).bassLine);
+    }
+    check('Backquote and numpad 0 cycle five bass lines', () => assert.deepEqual(lines, [1, 2, 3, 4, 0]));
+    await press('Backquote');
+    await press('F3');
+    const waltzLine = await probe();
+    const waltzBass = await waitFor(s => s.counts.bass > waltzLine.counts.bass);
+    check('bass-line variations also fit the waltz', () => assert.ok(waltzBass.counts.bass > waltzLine.counts.bass));
+    for (let i = 0; i < 4; i++) await press('Backquote');
     await press('F1');
 
     await press('CapsLock');
     await press('Tab');
     await press('Enter');
     const toggled = await probe();
-    check('Caps Lock, Tab and Enter toggle sustain, Rainbow and the Sound Graph', () => {
-      assert.equal(toggled.sustain, true);
+    check('Tab and Enter toggle Rainbow and the Sound Graph', () => {
       assert.equal(toggled.rainbow, true);
       assert.equal(toggled.panel, 'graph');
     });
@@ -155,11 +273,52 @@ app.whenReady().then(async () => {
     check('a burst of movement plays at most one note per sixteenth', () =>
       assert.ok(afterBurst.counts.mouse - burst.counts.mouse <= 2, `${afterBurst.counts.mouse - burst.counts.mouse} notes`));
 
+    const keyCentre = async code => js(`{
+      const { x, y } = __TV.keyCenter('${code}');
+      const size = __TV.state.cellSize;
+      ({ x: (x + 0.5) * size, y: (y + 0.5) * size });
+    }`);
+    const onScreenQ = await keyCentre('KeyQ');
+    await mouse('mousemove', onScreenQ);
+    const beforeClick = await probe();
+    await mouse('mousedown', onScreenQ, 1);
+    await delay(400);
+    const clickHeld = await probe();
+    check('clicking an on-screen key plays it and holds it while the button is down', () => {
+      assert.equal(clickHeld.counts.synth, beforeClick.counts.synth + 1);
+      assert.deepEqual(clickHeld.held, ['KeyQ']);
+      assert.ok(clickHeld.floaters.some(f => f.code === 'KeyQ'));
+    });
+    check('clicking a key does not freeze the drawing', () => assert.equal(clickHeld.frozen, false));
+    const onScreenW = await keyCentre('KeyW');
+    await mouse('mousemove', onScreenW, 1);
+    const slid = await probe();
+    check('sliding onto the next key lets go of the first and plays the second', () =>
+      assert.deepEqual(slid.held, ['KeyW']));
+    await mouse('mousemove', centre, 1);
+    const slidOff = await probe();
+    check('sliding off the keyboard lets go', () => assert.deepEqual(slidOff.held, []));
+    await mouse('mousemove', onScreenQ, 1);
+    await mouse('mouseup', onScreenQ);
+    const clickReleased = await waitFor(s => s.floaters.length === 0);
+    check('releasing the button lets go of the note', () => assert.deepEqual(clickReleased.held, []));
+    check('none of that froze the drawing', () => assert.equal(clickReleased.frozen, false));
+    const onScreenA = await keyCentre('KeyA');
+    await mouse('mousemove', onScreenA);
+    const beforeDrumClick = await probe();
+    await mouse('mousedown', onScreenA, 1);
+    await mouse('mouseup', onScreenA);
+    const drumClicked = await probe();
+    check('clicking an on-screen drum key plays the drum', () =>
+      assert.equal(drumClicked.counts.drum, beforeDrumClick.counts.drum + 1));
+
+    await mouse('mousemove', centre);
     await mouse('mousedown', centre, 1);
+    await mouse('mouseup', centre);
     const frozen = await probe();
     check('a click freezes the drawing and blips', () => {
       assert.equal(frozen.frozen, true);
-      assert.equal(frozen.counts.blip, afterBurst.counts.blip + 1);
+      assert.equal(frozen.counts.blip, drumClicked.counts.blip + 1);
     });
     const scrolled = await waitFor(s => s.scrollX > frozen.scrollX + 2);
     check('a frozen drawing scrolls instead of growing', () => {
@@ -167,6 +326,7 @@ app.whenReady().then(async () => {
       assert.equal(scrolled.drawingSteps, frozen.drawingSteps);
     });
     await mouse('mousedown', centre, 1);
+    await mouse('mouseup', centre);
     const resumed = await waitFor(s => s.drawingSteps > scrolled.drawingSteps);
     check('a second click resumes drawing', () => {
       assert.equal(resumed.frozen, false);
@@ -195,7 +355,7 @@ app.whenReady().then(async () => {
     const silent = [];
     for (const code of keys) {
       const before = await probe();
-      await press(code);
+      await tap(code);
       const after = await probe();
       const sum = s => Object.values(s.counts).reduce((total, n) => total + n, 0) - s.counts.bass - s.counts.beat;
       if (sum(after) <= sum(before)) silent.push(code);

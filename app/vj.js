@@ -31,13 +31,40 @@ const KEYBOARD_ROWS = [SYNTH_HIGH_ROW, SYNTH_ROW, DRUM_ROW, VISITOR_ROW];
 // Real keyboard stagger, in key widths, relative to the number row.
 const KEYBOARD_STAGGER = [0, 0.5, 0.75, 1.25];
 const KEYBOARD_WIDTH_KEYS = 14;
-const KEY_GAP = 1;
+// The on-screen keyboard's flat key rectangles lie on a floor, seen in perspective from
+// above and in front. The eye (the horizon) is this far down the screen: higher tilts the
+// keys toward the viewer. Held notes floating up flip to their undersides as they cross it.
+const HORIZON_FRACTION = 0.1;
+// Space between neighbouring keys in a row, as a fraction of a key's width, and between
+// rows, as a fraction of a row's depth (larger, since depth is foreshortened on screen).
+const KEY_GAP_FRACTION = 0.12;
+const ROW_GAP_FRACTION = 0.3;
+// Black space between the near row and the bottom of the screen.
+const KEYBOARD_BOTTOM_MARGIN_CELLS = 6;
 // The number row plays one pentatonic octave above the letter row.
 const HIGH_ROW_DEGREE_OFFSET = 5;
-const GROOVE_KEYS = ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'];
-const TEMPO_KEYS = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 };
+// F1–F9 and numpad 1–9 pick the nine grooves (the numpad is for keyboards whose
+// F-row sends media shortcuts).
+const GROOVE_KEYS = Object.fromEntries(
+  GROOVES.flatMap((_, i) => [[`F${i + 1}`, i], [`Numpad${i + 1}`, i]])
+);
+const BASS_LINE_KEYS = ['Backquote', 'Numpad0'];
+const TEMPO_KEYS = { ArrowUp: 1, ArrowDown: -1 };
+const TRANSPOSE_KEYS = { ArrowRight: 1, ArrowLeft: -1 };
 const BLIP_DEGREES = 10;
 const LIT_SECONDS = 0.25;
+// Like the original, a held synth key's outline lifts off the keyboard and floats up,
+// changing colour, until the key comes up.
+// Rising speed and acceleration in cells per second (per second), measured at the near
+// row. Fast enough to cross eye level, and flip to showing the key's underside, within a
+// few seconds of holding.
+const FLOAT_START_SPEED_CELLS = 15;
+const FLOAT_ACCELERATION_CELLS = 12;
+const FLOAT_HUE_STEPS_PER_SECOND = 20;
+// While Space's vibrato is on, floating outlines wobble side to side in time with it.
+const FLOAT_WOBBLE_CELLS = 3;
+// Darker copies of the wheel, so a released note's outline can fade out with its sound.
+const FADE_LEVELS = 3;
 
 // Same palette recipe as Tiny Draw: per hue, the most saturated sRGB colour whose
 // OKLCH lightness is in this range, so nothing goes dark.
@@ -64,7 +91,7 @@ const DRAWING_STEPS = 96;
 const SPIRAL_MAX_FRACTION = 0.6;
 const TURN_DEGREES_PER_PIXEL = 0.01;
 const GROWTH_PER_PIXEL = 0.002;
-const BEND_TURN_DEGREES = 90;
+const SPACE_TURN_DEGREES = 90;
 
 const MOUSE_NOTE_MIN_TRAVEL = 6;
 const MOUSE_DEGREES = 10;
@@ -171,7 +198,11 @@ const WHEEL_RGB = Array.from({ length: WHEEL_SIZE }, (_, i) =>
   brightestSaturated((i * 360) / WHEEL_SIZE)
 );
 // ImageData is RGBA bytes, i.e. ABGR when viewed as little-endian uint32.
-const WHEEL_PIXELS = WHEEL_RGB.map(([r, g, b]) => (BLACK | (b << 16) | (g << 8) | r) >>> 0);
+const toPixel = ([r, g, b]) => (BLACK | (b << 16) | (g << 8) | r) >>> 0;
+// FADED_PIXELS[0] is the full-brightness wheel; each level after it is darker.
+const FADED_PIXELS = Array.from({ length: FADE_LEVELS }, (_, level) =>
+  WHEEL_RGB.map((rgb) => toPixel(rgb.map((channel) => Math.round((channel * (FADE_LEVELS - level)) / FADE_LEVELS))))
+);
 
 const mod = (n, m) => ((n % m) + m) % m;
 const hex = ([r, g, b]) => '#' + [r, g, b].map((c) => c.toString(16).padStart(2, '0')).join('');
@@ -197,6 +228,7 @@ const context = canvas.getContext('2d');
 
 // Every colour on screen, frame and drawing alike, is 0 for black or 1 + a wheel
 // index relative to cycleOffset, so the wheel and Rainbow recolour everything at once.
+// Indices past the wheel are the same hues at FADE_LEVELS darker steps.
 const state = {
   cellSize: 1,
   cols: 0,
@@ -213,11 +245,14 @@ const state = {
   panel: 'keyboard',
   cycleOffset: 0,
   lit: new Map(),
+  floaters: [],
   visitors: [],
   shapes: [],
   pointer: null,
   pointerColor: 0,
   pointerPulseUntil: 0,
+  playingKeys: false,
+  mouseKey: null,
   mouseTravel: 0,
   mouseNoteAt: -Infinity,
   wheelRemainder: 0,
@@ -368,8 +403,8 @@ function onSound(event, now) {
       state.pointerColor = color;
       state.pointerPulseUntil = now + POINTER_PULSE_SECONDS;
       break;
-    case 'bend':
-      state.turtle.heading = mod(state.turtle.heading + BEND_TURN_DEGREES, 360);
+    case 'vibrato':
+      state.turtle.heading = mod(state.turtle.heading + SPACE_TURN_DEGREES, 360);
       break;
   }
 }
@@ -380,10 +415,15 @@ function update() {
     if (soundEvents[i].time > now) { i++; continue; }
     const [event] = soundEvents.splice(i, 1);
     if (event.type === 'step') onStep(event.step);
+    else if (event.type === 'release') {
+      const floater = state.floaters.find(({ voiceId }) => voiceId === event.voiceId);
+      if (floater) floater.releasedAt = now;
+    }
     else onSound(event, now);
   }
   state.visitors = state.visitors.filter((visitor) => now - visitor.born < VISITOR_SECONDS);
   state.shapes = state.shapes.filter((shape) => now - shape.born < SHAPE_SECONDS);
+  state.floaters = state.floaters.filter(({ releasedAt }) => !(now - releasedAt >= SYNTH_RELEASE_SECONDS));
   for (const [code, until] of state.lit) if (until <= now) state.lit.delete(code);
 }
 
@@ -409,20 +449,115 @@ function strokeRect(x, y, w, h, color, clip) {
   fillRect(x + w - 1, y, 1, h, color, clip);
 }
 
+function plotLine([x0, y0], [x1, y1], color, clip) {
+  const deltaX = Math.abs(x1 - x0);
+  const deltaY = -Math.abs(y1 - y0);
+  const stepX = x0 < x1 ? 1 : -1;
+  const stepY = y0 < y1 ? 1 : -1;
+  let error = deltaX + deltaY;
+  for (let x = x0, y = y0; ;) {
+    plotFrame(x, y, color, clip);
+    if (x === x1 && y === y1) return;
+    const doubled = 2 * error;
+    if (doubled >= deltaY) { error += deltaY; x += stepX; }
+    if (doubled <= deltaX) { error += deltaX; y += stepY; }
+  }
+}
+
+// Scanline fill of a convex polygon, sampling each row at its centre.
+function fillPolygon(points, color, clip) {
+  const ys = points.map(([, y]) => y);
+  for (let y = Math.min(...ys); y <= Math.max(...ys); y++) {
+    const scan = y + 0.5;
+    const xs = [];
+    points.forEach(([ax, ay], i) => {
+      const [bx, by] = points[(i + 1) % points.length];
+      if ((ay <= scan) !== (by <= scan)) xs.push(ax + ((scan - ay) / (by - ay)) * (bx - ax));
+    });
+    if (xs.length < 2) continue;
+    const left = Math.round(Math.min(...xs));
+    fillRect(left, y, Math.round(Math.max(...xs)) - left + 1, 1, color, clip);
+  }
+}
+
+function insidePolygon([x, y], points) {
+  let inside = false;
+  points.forEach(([ax, ay], i) => {
+    const [bx, by] = points[(i + 1) % points.length];
+    if ((ay > y) !== (by > y) && x < ax + ((y - ay) / (by - ay)) * (bx - ax)) inside = !inside;
+  });
+  return inside;
+}
+
+// World space: x and y (up) in cells as seen at the near row, z is distance with the near
+// row at 1. The eye sits above the middle of the keyboard, at the height that puts the
+// near row's front edge a margin above the panel's bottom edge; the keyboard's depth (how far back the
+// far row sits) is whatever puts the far row's back edge at the panel's top edge.
+function camera() {
+  const top = state.panelArea.y;
+  const bottom = state.panelArea.y + state.panelArea.h - 1 - KEYBOARD_BOTTOM_MARGIN_CELLS;
+  const horizon = Math.round(state.rows * HORIZON_FRACTION);
+  const eye = bottom - horizon;
+  return { centerX: state.panelArea.x + state.panelArea.w / 2, horizon, eye, depthRatio: eye / (top - horizon) };
+}
+
+// A key is a flat rectangle on the floor; `rise` lifts it straight up.
+function keyQuad(code, cam, rise = 0, shiftX = 0) {
+  const r = KEYBOARD_ROWS.findIndex((row) => row.includes(code));
+  const rowDepth = (cam.depthRatio - 1) / KEYBOARD_ROWS.length;
+  const keyW = state.panelArea.w / KEYBOARD_WIDTH_KEYS;
+  const x0 = (KEYBOARD_STAGGER[r] + KEYBOARD_ROWS[r].indexOf(code) - KEYBOARD_WIDTH_KEYS / 2) * keyW + shiftX;
+  const x1 = x0 + keyW * (1 - KEY_GAP_FRACTION);
+  const z0 = 1 + (KEYBOARD_ROWS.length - 1 - r) * rowDepth;
+  const z1 = z0 + rowDepth * (1 - ROW_GAP_FRACTION);
+  const project = (x, z) => [Math.round(cam.centerX + x / z), Math.round(cam.horizon + (cam.eye - rise) / z)];
+  return [project(x0, z0), project(x1, z0), project(x1, z1), project(x0, z1)];
+}
+
+function strokePolygon(points, color, clip) {
+  points.forEach((point, i) => plotLine(point, points[(i + 1) % points.length], color, clip));
+}
+
 function drawKeyboard(now) {
   const area = state.panelArea;
-  const keyW = Math.floor(area.w / KEYBOARD_WIDTH_KEYS);
-  const keyH = Math.floor(area.h / KEYBOARD_ROWS.length);
-  const left = area.x + Math.floor((area.w - keyW * KEYBOARD_WIDTH_KEYS) / 2);
-  KEYBOARD_ROWS.forEach((row, r) => {
-    row.forEach((code, i) => {
-      const x = left + Math.round((KEYBOARD_STAGGER[r] + i) * keyW);
-      const y = area.y + r * keyH;
-      const color = wheelIndexForKey(code) + 1;
-      if (state.lit.get(code) > now) fillRect(x, y, keyW - KEY_GAP, keyH - KEY_GAP, color, area);
-      else strokeRect(x, y, keyW - KEY_GAP, keyH - KEY_GAP, color, area);
-    });
-  });
+  const cam = camera();
+  for (const code of KEYBOARD_ROWS.flat()) {
+    const quad = keyQuad(code, cam);
+    const color = wheelIndexForKey(code) + 1;
+    const held = state.floaters.some((floater) => floater.code === code && floater.releasedAt === undefined);
+    if (held || state.lit.get(code) > now) fillPolygon(quad, color, area);
+    else strokePolygon(quad, color, area);
+  }
+}
+
+// Height above the keyboard, in world cells.
+function floatRise(floater, now) {
+  const age = now - floater.born;
+  return FLOAT_START_SPEED_CELLS * age + (FLOAT_ACCELERATION_CELLS * age ** 2) / 2;
+}
+
+// Held notes rise as flat key outlines in the same perspective, so their shape changes as
+// they go: they flatten toward eye level, squash to a line at it, then open out again
+// seen from underneath. Black inside, so they read in front of the drawing.
+function drawFloaters(now) {
+  const screen = { x: 0, y: 0, w: state.cols, h: state.rows };
+  const cam = camera();
+  for (const floater of state.floaters) {
+    const wobble = sequencer.vibrato ? Math.sin(now * VIBRATO_HZ * 2 * Math.PI) * FLOAT_WOBBLE_CELLS : 0;
+    const quad = keyQuad(floater.code, cam, floatRise(floater, now), wobble);
+    const hue = mod(floater.color + Math.floor((now - floater.born) * FLOAT_HUE_STEPS_PER_SECOND), WHEEL_SIZE);
+    const fade = floater.releasedAt === undefined
+      ? 0
+      : Math.min(FADE_LEVELS - 1, Math.floor(((now - floater.releasedAt) / SYNTH_RELEASE_SECONDS) * FADE_LEVELS));
+    fillPolygon(quad, 0, screen);
+    strokePolygon(quad, fade * WHEEL_SIZE + hue + 1, screen);
+  }
+}
+
+function keyCenter(code) {
+  const quad = keyQuad(code, camera());
+  const sum = quad.reduce(([sx, sy], [x, y]) => [sx + x, sy + y], [0, 0]);
+  return { x: sum[0] / quad.length, y: sum[1] / quad.length };
 }
 
 // The original's Sound Graph: squares for notes, diamonds for drums.
@@ -486,12 +621,19 @@ function render() {
   }
   if (state.panel === 'keyboard') drawKeyboard(now);
   else drawSoundGraph(now);
+  drawFloaters(now);
   drawVisitors(now);
   drawPointer(now);
 
   for (let i = 0; i < frame.length; i++) {
     const color = frame[i];
-    pixels[i] = color ? WHEEL_PIXELS[mod(color - 1 + state.cycleOffset, WHEEL_SIZE)] : BLACK;
+    if (!color) {
+      pixels[i] = BLACK;
+      continue;
+    }
+    const index = color - 1;
+    const fade = Math.floor(index / WHEEL_SIZE);
+    pixels[i] = FADED_PIXELS[fade][mod(index - fade * WHEEL_SIZE + state.cycleOffset, WHEEL_SIZE)];
   }
   context.putImageData(image, 0, 0);
 }
@@ -503,11 +645,16 @@ function frameLoop() {
 
 const blipDegree = (code) => wheelIndexForKey(code) % BLIP_DEGREES;
 
+function holdNote(code, voiceId) {
+  if (voiceId === null) return;
+  state.floaters.push({ code, voiceId, color: wheelIndexForKey(code), born: audio.currentTime });
+}
+
 function onKey(code) {
   state.lit.set(code, audio.currentTime + LIT_SECONDS);
   const rows = [
-    [SYNTH_ROW, (i) => playSynth(i, 'lead', code)],
-    [SYNTH_HIGH_ROW, (i) => playSynth(i + HIGH_ROW_DEGREE_OFFSET, 'bell', code)],
+    [SYNTH_ROW, (i) => holdNote(code, startSynth(i, 'lead', code))],
+    [SYNTH_HIGH_ROW, (i) => holdNote(code, startSynth(i + HIGH_ROW_DEGREE_OFFSET, 'bell', code))],
     [DRUM_ROW, (i) => playDrumKey(i, code)],
     [VISITOR_ROW, (i) => playVisitor(i, code)],
   ];
@@ -516,19 +663,27 @@ function onKey(code) {
     if (index >= 0) { play(index); return; }
   }
 
-  if (code === 'Space') { bend(code); return; }
+  if (code === 'Space') { startVibrato(code); return; }
   if (code === 'ShiftLeft' || code === 'ShiftRight') { roll(code); return; }
 
   playBlip(blipDegree(code), code);
-  if (GROOVE_KEYS.includes(code)) setGroove(GROOVE_KEYS.indexOf(code) % GROOVES.length);
+  if (code in GROOVE_KEYS) setGroove(GROOVE_KEYS[code]);
+  else if (BASS_LINE_KEYS.includes(code)) nextBassLine();
   else if (code in TEMPO_KEYS) nudgeTempo(TEMPO_KEYS[code]);
-  else if (code === 'CapsLock') sequencer.sustain = !sequencer.sustain;
+  else if (code in TRANSPOSE_KEYS) transpose(TRANSPOSE_KEYS[code]);
   else if (code === 'Tab') state.rainbow = !state.rainbow;
   else if (code === 'Enter') state.panel = state.panel === 'keyboard' ? 'graph' : 'keyboard';
   else if (code === 'Escape') {
     state.frozen = false;
     newDrawing();
   }
+}
+
+function keyUnderPointer() {
+  if (state.panel !== 'keyboard') return null;
+  const point = [Math.floor(state.pointer.x / state.cellSize), Math.floor(state.pointer.y / state.cellSize)];
+  const cam = camera();
+  return KEYBOARD_ROWS.flat().find((code) => insidePolygon(point, keyQuad(code, cam))) ?? null;
 }
 
 function onPointer(event) {
@@ -545,11 +700,33 @@ function onPointer(event) {
   const moveY = state.pointer.y - from.y;
 
   if (event.type === 'mousedown') {
+    // Pressing on the on-screen keyboard plays keys, held for as long as the button is.
+    const key = keyUnderPointer();
+    if (key) {
+      state.playingKeys = true;
+      state.mouseKey = key;
+      onKey(key);
+      return;
+    }
     // The original's stop (Z) and scroll (M), on one click; the next click resumes.
     state.frozen = !state.frozen;
     playBlip(state.frozen ? 0 : BLIP_DEGREES / 2);
     return;
   }
+  if (state.playingKeys) {
+    // event.buttons catches a mouseup lost to a focus steal.
+    const key = event.type === 'mouseup' || !event.buttons ? null : keyUnderPointer();
+    // Sliding off a key lets it go; sliding onto another plays that one, like running a
+    // finger along a real keyboard.
+    if (key !== state.mouseKey) {
+      if (state.mouseKey) releaseSynth(state.mouseKey);
+      state.mouseKey = key;
+      if (key) onKey(key);
+    }
+    if (event.type === 'mouseup' || !event.buttons) state.playingKeys = false;
+    return;
+  }
+  if (event.type === 'mouseup') return;
 
   // Steering the drawing is the original's angle (D) and size (F) keys, made continuous.
   state.turtle.turn = mod(state.turtle.turn + moveX * TURN_DEGREES_PER_PIXEL, 360);
@@ -563,7 +740,7 @@ function onPointer(event) {
   state.mouseNoteAt = playMouseNote(Math.min(MOUSE_DEGREES - 1, Math.floor(height * MOUSE_DEGREES)));
 }
 
-for (const type of ['mousemove', 'mousedown']) {
+for (const type of ['mousemove', 'mousedown', 'mouseup']) {
   window.addEventListener(type, onPointer);
 }
 
@@ -579,11 +756,25 @@ window.addEventListener('wheel', (event) => {
   playBlip(state.cycleOffset % BLIP_DEGREES);
 }, { passive: false });
 
-for (const type of ['contextmenu', 'dragstart', 'selectstart']) {
+// main.js lets plain key-downs reach the page (so their key-ups arrive) and forwards
+// them over IPC; their DOM defaults (Tab focus, Space scrolling) must not run.
+for (const type of ['keydown', 'contextmenu', 'dragstart', 'selectstart']) {
   window.addEventListener(type, (event) => event.preventDefault());
 }
 
 window.kiosk.onKeyDown(onKey);
+window.kiosk.onKeyUp((code) => {
+  // macOS sends no key-ups for keys pressed while Cmd is down, so Cmd coming up is the
+  // last chance to let go of them.
+  if (code === 'MetaLeft' || code === 'MetaRight') releaseAllSynth();
+  else if (code === 'Space') stopVibrato();
+  else releaseSynth(code);
+});
+// Key-ups can't arrive while another app has focus; let go of everything.
+window.addEventListener('blur', () => {
+  releaseAllSynth();
+  stopVibrato();
+});
 window.addEventListener('resize', resize);
 resize();
 startGroove();
@@ -603,8 +794,14 @@ window.render_game_to_text = () => {
     audio: audio.state,
     groove: groove().name,
     bpm: sequencer.bpm,
+    transpose: sequencer.transpose,
+    vibrato: sequencer.vibrato,
+    vibratoCents: Math.round(vibratoDepth.gain.value),
+    bassLine: sequencer.bassLine,
+    held: [...heldSynth.keys()],
+    floaters: state.floaters.map((floater) => ({ code: floater.code, rise: floatRise(floater, audio.currentTime) })),
     step: sequencer.step,
-    sustain: sequencer.sustain,
+    ringingSeconds: Math.max(0, ...activeSynth.map(({ stopAt }) => stopAt - audio.currentTime)),
     frozen: state.frozen,
     rainbow: state.rainbow,
     panel: state.panel,
@@ -622,4 +819,4 @@ window.render_game_to_text = () => {
     lastHz,
   });
 };
-window.__TV = { state, sequencer, counts, colorAt, palette: WHEEL_RGB.map(hex) };
+window.__TV = { state, sequencer, counts, colorAt, keyCenter, palette: WHEEL_RGB.map(hex) };

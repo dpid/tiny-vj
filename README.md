@@ -6,21 +6,23 @@ adds a sound and a picture on top of it, and a chunky pixel drawing draws itself
 
 | Input | Sound | Picture |
 |-------|-------|---------|
-| Letter row (Q…\\) | Synth notes, higher to the right | The key lights up; the drawing takes its colour |
-| Number row (1…=) | Bell notes, an octave above the letter row | The key lights up; the drawing takes its colour |
+| Letter row (Q…\\) | Synth notes, higher to the right; the note plays while the key is down and fades out over a quarter second when let go | The key lights up and its outline floats up, changing colour, while held, then fades with the note; the drawing takes its colour |
+| Number row (1…=) | Bell notes, an octave above the letter row; held keys sustain | Same as the letter row |
 | Home row (A…') | Drums | The key lights up |
 | Bottom row (Z…/) | Space sounds | A space visitor flies across |
-| Space | Pitch bend (a boing if nothing is playing) | The drawing turns |
+| Space (hold) | Vibrato on every synth note while held (a short wobble if nothing is playing) | The drawing turns; floating outlines wobble |
 | Shift | Drum roll on the last drum | — |
-| Caps Lock | Sustain on/off | — |
 | Tab | Blip | Rainbow colour cycling on/off |
 | Enter | Blip | Keyboard ↔ Sound Graph |
-| F1–F12 | New groove (four of them, repeating) | — |
-| Arrows | Faster / slower | — |
+| F1–F9, numpad 1–9 | Nine grooves: funk, boogie, waltz, space, reggae, disco, electro, bossa, lullaby | — |
+| \` (backquote), numpad 0 | Next of five bass lines for the current groove | — |
+| Up / Down | Faster / slower | — |
+| Right / Left | Transpose everything up / down a semitone (up to an octave each way) | — |
 | Escape | Blip | A fresh drawing |
 | Any other key | Blip | The key lights up |
 | Move the mouse | A note on every sixteenth, pitched by height | Steers the drawing's angle and size |
-| Click | Blip | Freeze the drawing and scroll it; click again to resume |
+| Click an on-screen key | Plays that key, held for as long as the button is down; slide to other keys to play them | Same as pressing the key |
+| Click anywhere else | Blip | Freeze the drawing and scroll it; click again to resume |
 | Scroll wheel | Blip | Colour-cycles everything |
 
 Every note lands on the groove's sixteenth-note grid and in its pentatonic scale, so mashing keys

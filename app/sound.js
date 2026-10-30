@@ -23,7 +23,7 @@ const SCHEDULER_INTERVAL_MS = 25;
 const START_DELAY_SECONDS = 0.1;
 const STEPS_PER_BEAT = 4;
 const SECONDS_PER_MINUTE = 60;
-const MIN_BPM = 84;
+const MIN_BPM = 66;
 const MAX_BPM = 138;
 const BPM_STEP = 6;
 
@@ -35,16 +35,23 @@ const BASS_MAX_STEPS = 4;
 // tune instead of a smear.
 const MAX_SYNTH_VOICES = 4;
 const STEAL_FADE_SECONDS = 0.01;
-const SYNTH_NOTE_STEPS = 2;
-const SUSTAIN_NOTE_STEPS = 8;
+// Synth keys work like any keyboard synth: key-down starts the note, it holds at a
+// steady level, key-up fades it out over this long. A key-up lost some other way than
+// blur or Cmd (both handled in vj.js) still can't hold a note forever.
+const SYNTH_RELEASE_SECONDS = 0.25;
+const MAX_HOLD_SECONDS = 30;
+// Attack, then this exponential decay toward the patch's sustain level.
+const DECAY_SECONDS = 0.1;
+const TRANSPOSE_LIMIT = 12;
 const SYNTH_OCTAVE_ABOVE_ROOT = 12;
 const MOUSE_OCTAVES_ABOVE_ROOT = 24;
 const BLIP_OCTAVES_ABOVE_ROOT = 24;
 const BLIP_SECONDS = 0.09;
 
-const BEND_CENTS = 200;
-const BEND_UP_SECONDS = 0.12;
-const BEND_DOWN_SECONDS = 0.35;
+// Holding Space wobbles every sounding synth note (the original put vibrato on Shift).
+const VIBRATO_HZ = 6;
+const VIBRATO_CENTS = 40;
+const VIBRATO_RAMP_SECONDS = 0.08;
 const ROLL_HITS = 4;
 const ROLL_HITS_PER_STEP = 2;
 
@@ -54,21 +61,26 @@ const MAJOR_PENTATONIC = [0, 2, 4, 7, 9];
 const PATCHES = {
   lead: {
     wave: 'pulse', width: 0.25, pwmHz: 3, pwmDepth: 0.15,
-    attack: 0.005, sustain: 0.6, release: 0.15, volume: 0.16, filterHz: 3200, filterQ: 4,
+    attack: 0.005, sustain: 1, release: SYNTH_RELEASE_SECONDS, volume: 0.16, filterHz: 3200, filterQ: 4,
   },
   bell: {
     wave: 'triangle', vibratoHz: 6, vibratoCents: 18,
-    attack: 0.002, sustain: 0.4, release: 0.4, volume: 0.3,
+    attack: 0.002, sustain: 1, release: SYNTH_RELEASE_SECONDS, volume: 0.3,
   },
   blip: { wave: 'square', attack: 0.002, sustain: 0.5, release: 0.04, volume: 0.1 },
-  boing: { wave: 'triangle', attack: 0.002, sustain: 0.5, release: 0.1, volume: 0.3 },
+  // Space with no note sounding: a short wobble, so the key still makes a sound.
+  wobble: {
+    wave: 'triangle', vibratoHz: VIBRATO_HZ, vibratoCents: VIBRATO_CENTS * 2,
+    attack: 0.002, sustain: 0.6, release: 0.15, volume: 0.25,
+  },
 };
 
 // Hand-written in the spirit of the original's four built-in funk bass lines. Bass
 // entries are semitones above the root (null = rest); drum lanes use 'x' for a hit.
+// barSteps picks the bass-line variations that fit the groove's metre.
 const GROOVES = [
   {
-    name: 'funk', bpm: 108, rootMidi: 40, scale: MINOR_PENTATONIC, steps: 16,
+    name: 'funk', barSteps: 16, bpm: 108, rootMidi: 40, scale: MINOR_PENTATONIC, steps: 16,
     bass: [0, null, null, 12, null, null, 0, null, 3, null, 5, null, 7, null, 10, 12],
     bassPatch: {
       wave: 'pulse', width: 0.35, attack: 0.003, sustain: 0.4, release: 0.1, volume: 0.3,
@@ -82,7 +94,7 @@ const GROOVES = [
     },
   },
   {
-    name: 'boogie', bpm: 120, rootMidi: 45, scale: MAJOR_PENTATONIC, steps: 16,
+    name: 'boogie', barSteps: 16, bpm: 120, rootMidi: 45, scale: MAJOR_PENTATONIC, steps: 16,
     bass: [0, null, 4, null, 7, null, 9, null, 10, null, 9, null, 7, null, 4, null],
     bassPatch: {
       wave: 'sawtooth', attack: 0.004, sustain: 0.6, release: 0.08, volume: 0.2,
@@ -96,7 +108,7 @@ const GROOVES = [
     },
   },
   {
-    name: 'waltz', bpm: 96, rootMidi: 38, scale: MAJOR_PENTATONIC, steps: 24,
+    name: 'waltz', barSteps: 12, bpm: 96, rootMidi: 38, scale: MAJOR_PENTATONIC, steps: 24,
     bass: [
       0, null, null, null, 7, null, null, null, 7, null, null, null,
       -5, null, null, null, 2, null, null, null, 2, null, null, null,
@@ -110,7 +122,7 @@ const GROOVES = [
     },
   },
   {
-    name: 'space', bpm: 90, rootMidi: 36, scale: MINOR_PENTATONIC, steps: 16,
+    name: 'space', barSteps: 16, bpm: 90, rootMidi: 36, scale: MINOR_PENTATONIC, steps: 16,
     bass: [0, null, null, null, null, null, null, 0, null, null, 3, null, null, null, -2, null],
     bassPatch: {
       wave: 'pulse', width: 0.5, pwmHz: 0.5, pwmDepth: 0.3,
@@ -123,7 +135,85 @@ const GROOVES = [
       open: '......x.........',
     },
   },
+  {
+    name: 'reggae', barSteps: 16, bpm: 78, rootMidi: 43, scale: MINOR_PENTATONIC, steps: 16,
+    bass: [0, null, null, null, null, null, 7, null, 10, null, null, 7, 5, null, 3, null],
+    bassPatch: { wave: 'triangle', attack: 0.01, sustain: 0.8, release: 0.15, volume: 0.45 },
+    drums: {
+      kick: '........x.......',
+      snare: '........x.......',
+      hat: '..x...x...x...x.',
+    },
+  },
+  {
+    name: 'disco', barSteps: 16, bpm: 120, rootMidi: 41, scale: MINOR_PENTATONIC, steps: 16,
+    bass: [0, 12, 0, 12, 0, 12, 0, 12, 3, 15, 3, 15, 5, 17, 5, 17],
+    bassPatch: {
+      wave: 'pulse', width: 0.3, attack: 0.003, sustain: 0.5, release: 0.05, volume: 0.25,
+      filterHz: 1500, filterEnvHz: 1500, filterQ: 4,
+    },
+    drums: {
+      kick: 'x...x...x...x...',
+      snare: '....x.......x...',
+      hat: 'x...x...x...x...',
+      open: '..x...x...x...x.',
+    },
+  },
+  {
+    name: 'electro', barSteps: 16, bpm: 116, rootMidi: 46, scale: MINOR_PENTATONIC, steps: 16,
+    bass: [0, null, 0, null, null, 0, null, null, 12, null, 10, null, 7, null, null, null],
+    bassPatch: {
+      wave: 'sawtooth', attack: 0.003, sustain: 0.3, release: 0.05, volume: 0.22,
+      filterHz: 500, filterEnvHz: 3000, filterQ: 10,
+    },
+    drums: {
+      kick: 'x..x..x...x.....',
+      clap: '....x.......x...',
+      hat: 'x.x.x.x.x.x.x.xx',
+    },
+  },
+  {
+    name: 'bossa', barSteps: 16, bpm: 100, rootMidi: 38, scale: MAJOR_PENTATONIC, steps: 16,
+    bass: [0, null, null, 7, null, null, null, null, 2, null, null, 9, null, null, null, null],
+    bassPatch: { wave: 'triangle', attack: 0.004, sustain: 0.6, release: 0.12, volume: 0.4 },
+    drums: {
+      kick: 'x..x....x..x....',
+      rim: 'x..x..x...x..x..',
+      hat: 'x.x.x.x.x.x.x.x.',
+    },
+  },
+  {
+    name: 'lullaby', barSteps: 12, bpm: 72, rootMidi: 36, scale: MAJOR_PENTATONIC, steps: 24,
+    bass: [
+      0, null, null, null, 4, null, null, null, 7, null, null, null,
+      -3, null, null, null, 0, null, null, null, 4, null, null, null,
+    ],
+    bassPatch: { wave: 'triangle', attack: 0.02, sustain: 0.8, release: 0.3, volume: 0.35 },
+    drums: {
+      kick: 'x...........x...........',
+      hat: '....x...x.......x...x...',
+    },
+  },
 ];
+
+// Backquote cycles bass lines: the groove's own line first, then these, written in
+// scale degrees (5 = an octave up) so they fit any groove's key and scale. Every line
+// for a metre shares the bar's downbeat root, so a switch mid-groove stays in key.
+const BASS_VARIATIONS = {
+  16: [
+    [0, null, 0, null, 0, null, 0, null, 0, null, 0, null, 0, null, 5, null],
+    [0, null, 1, null, 2, null, 3, null, 4, null, 5, null, 4, null, 2, null],
+    [0, null, null, 0, null, null, 5, null, null, 3, null, null, 4, null, 2, null],
+    [0, null, 5, null, 0, null, 5, null, -1, null, 4, null, -1, null, 4, null],
+  ],
+  12: [
+    [0, null, null, null, 5, null, null, null, 5, null, null, null],
+    [0, null, null, null, 2, null, null, null, 4, null, null, null],
+    [0, null, null, null, null, null, 4, null, null, null, null, null],
+    [0, null, null, 2, null, null, 4, null, null, 2, null, null],
+  ],
+};
+const BASS_LINE_COUNT = 1 + BASS_VARIATIONS[16].length;
 
 const DRUMS = {
   kick: { tones: [{ wave: 'triangle', from: 160, to: 42, sweep: 0.12 }], decay: 0.3, volume: 0.7 },
@@ -173,6 +263,14 @@ limiter.attack.value = LIMITER_ATTACK_SECONDS;
 limiter.release.value = LIMITER_RELEASE_SECONDS;
 master.connect(limiter).connect(audio.destination);
 
+// One shared vibrato LFO; every synth voice's detune listens to its depth.
+const vibratoLfo = audio.createOscillator();
+vibratoLfo.frequency.value = VIBRATO_HZ;
+const vibratoDepth = audio.createGain();
+vibratoDepth.gain.value = 0;
+vibratoLfo.connect(vibratoDepth);
+vibratoLfo.start();
+
 const noiseBuffer = audio.createBuffer(1, audio.sampleRate * NOISE_SECONDS, audio.sampleRate);
 noiseBuffer.getChannelData(0).forEach((_, i, data) => { data[i] = Math.random() * 2 - 1; });
 
@@ -181,13 +279,17 @@ const sequencer = {
   bpm: GROOVES[0].bpm,
   step: 0,
   nextStepTime: 0,
-  sustain: false,
   lastDrum: 'snare',
+  vibrato: false,
+  transpose: 0,
+  bassLine: 0,
 };
-const counts = { bass: 0, beat: 0, synth: 0, drum: 0, visitor: 0, mouse: 0, blip: 0, bend: 0 };
+const counts = { bass: 0, beat: 0, synth: 0, drum: 0, visitor: 0, mouse: 0, blip: 0, vibrato: 0 };
 // Per voice, so the test can tell a key's pitch from the groove's bass.
 const lastHz = {};
 let activeSynth = [];
+const heldSynth = new Map();
+let nextVoiceId = 1;
 
 // Audio is scheduled ahead of time; the visuals drain these as their time comes up,
 // so a flash lands with its sound rather than when the key was pressed.
@@ -200,10 +302,25 @@ function emit(event) {
 const stepSeconds = () => SECONDS_PER_MINUTE / sequencer.bpm / STEPS_PER_BEAT;
 const groove = () => GROOVES[sequencer.groove];
 
-function scaleMidi(baseMidi, degree) {
+const rootMidi = () => groove().rootMidi + sequencer.transpose;
+
+function degreeSemitones(degree) {
   const { scale } = groove();
   const octave = Math.floor(degree / scale.length);
-  return baseMidi + scale[degree - octave * scale.length] + SEMITONES_PER_OCTAVE * octave;
+  return scale[degree - octave * scale.length] + SEMITONES_PER_OCTAVE * octave;
+}
+
+const scaleMidi = (semitonesAboveRoot, degree) => rootMidi() + semitonesAboveRoot + degreeSemitones(degree);
+
+// The current bass line as semitones above the root, one entry per groove step.
+function bassLine() {
+  const current = groove();
+  if (sequencer.bassLine === 0) return current.bass;
+  const variation = BASS_VARIATIONS[current.barSteps][sequencer.bassLine - 1];
+  return Array.from({ length: current.steps }, (_, i) => {
+    const degree = variation[i % variation.length];
+    return degree === null ? null : degreeSemitones(degree);
+  });
 }
 
 function createSource(hz, patch) {
@@ -241,13 +358,13 @@ function createSource(hz, patch) {
   return source;
 }
 
-function playTone(time, hz, patch, holdSeconds, glideToHz = hz) {
+// Starts a note with no end; the returned voice's release() ends it.
+function startTone(time, hz, patch, glide = null) {
   const source = createSource(hz, patch);
-  const end = time + holdSeconds;
-  const stopAt = end + patch.release + STOP_PADDING_SECONDS;
-  if (glideToHz !== hz) {
+  const decay = patch.decay ?? DECAY_SECONDS;
+  if (glide) {
     source.pitch.setValueAtTime(hz * source.pitchPerHz, time);
-    source.pitch.exponentialRampToValueAtTime(glideToHz * source.pitchPerHz, end);
+    source.pitch.exponentialRampToValueAtTime(glide.hz * source.pitchPerHz, time + glide.seconds);
   }
   if (patch.vibratoHz) {
     const lfo = audio.createOscillator();
@@ -264,22 +381,40 @@ function playTone(time, hz, patch, holdSeconds, glideToHz = hz) {
     filter.type = 'lowpass';
     filter.Q.value = patch.filterQ;
     filter.frequency.setValueAtTime(patch.filterHz + (patch.filterEnvHz ?? 0), time);
-    filter.frequency.exponentialRampToValueAtTime(patch.filterHz, end);
+    filter.frequency.setTargetAtTime(patch.filterHz, time, decay);
     output = output.connect(filter);
   }
 
   const gain = audio.createGain();
   gain.gain.setValueAtTime(SILENCE, time);
   gain.gain.exponentialRampToValueAtTime(patch.volume, time + patch.attack);
-  gain.gain.exponentialRampToValueAtTime(patch.volume * patch.sustain, Math.max(end, time + patch.attack));
-  gain.gain.exponentialRampToValueAtTime(SILENCE, end + patch.release);
+  gain.gain.setTargetAtTime(patch.volume * patch.sustain, time + patch.attack, decay);
   output.connect(gain).connect(master);
+  for (const node of source.nodes) node.start(time);
 
-  for (const node of source.nodes) {
-    node.start(time);
-    node.stop(stopAt);
-  }
-  return { gain, detune: source.detune, time, stopAt };
+  return {
+    id: nextVoiceId++,
+    gain,
+    oscillator: source.nodes[0],
+    detune: source.detune,
+    time,
+    stopAt: Infinity,
+    release(at, seconds = patch.release) {
+      gain.gain.cancelAndHoldAtTime(at);
+      gain.gain.exponentialRampToValueAtTime(SILENCE, at + seconds);
+      // A voice stolen after its key came up is released twice; it can only stop once.
+      if (this.stopAt !== Infinity) return;
+      this.stopAt = at + seconds + STOP_PADDING_SECONDS;
+      for (const node of source.nodes) node.stop(this.stopAt);
+    },
+  };
+}
+
+function playTone(time, hz, patch, holdSeconds, glideToHz = hz) {
+  const glide = glideToHz === hz ? null : { hz: glideToHz, seconds: holdSeconds };
+  const voice = startTone(time, hz, patch, glide);
+  voice.release(time + holdSeconds);
+  return voice;
 }
 
 function playDrum(name, time, level = 1) {
@@ -324,11 +459,12 @@ function playStep(stepIndex, time) {
   const i = stepIndex % current.steps;
   emit({ time, type: 'step', step: stepIndex });
 
-  const bass = current.bass[i];
+  const line = bassLine();
+  const bass = line[i];
   if (bass !== null) {
     let length = 1;
-    while (length < BASS_MAX_STEPS && current.bass[(i + length) % current.steps] === null) length++;
-    const hz = midiToHz(current.rootMidi + bass);
+    while (length < BASS_MAX_STEPS && line[(i + length) % current.steps] === null) length++;
+    const hz = midiToHz(rootMidi() + bass);
     playTone(time, hz, current.bassPatch, length * stepSeconds() * BASS_GATE);
     counts.bass++;
     emit({ time, type: 'sound', voice: 'bass', hz });
@@ -342,6 +478,9 @@ function playStep(stepIndex, time) {
 }
 
 function schedule() {
+  for (const [tag, voice] of heldSynth) {
+    if (audio.currentTime - voice.time > MAX_HOLD_SECONDS) releaseSynth(tag);
+  }
   while (sequencer.nextStepTime < audio.currentTime + LOOKAHEAD_SECONDS) {
     playStep(sequencer.step, sequencer.nextStepTime);
     sequencer.step++;
@@ -355,20 +494,41 @@ function startGroove() {
   setInterval(schedule, SCHEDULER_INTERVAL_MS);
 }
 
-function playSynth(degree, patchName, tag) {
-  const time = nextGridTime();
-  const hz = midiToHz(scaleMidi(groove().rootMidi + SYNTH_OCTAVE_ABOVE_ROOT, degree));
-  const steps = sequencer.sustain ? SUSTAIN_NOTE_STEPS : SYNTH_NOTE_STEPS;
-  activeSynth = activeSynth.filter((voice) => voice.stopAt > audio.currentTime);
-  activeSynth.push(playTone(time, hz, PATCHES[patchName], steps * stepSeconds()));
+// Returns the voice id, so the visuals can follow this one note until it's released,
+// or null when the key is already sounding (key repeat).
+function startSynth(degree, patchName, tag) {
+  if (heldSynth.has(tag)) return null;
+  const time = audio.currentTime;
+  const hz = midiToHz(scaleMidi(SYNTH_OCTAVE_ABOVE_ROOT, degree));
+  const voice = startTone(time, hz, PATCHES[patchName]);
+  heldSynth.set(tag, voice);
+  vibratoDepth.connect(voice.detune);
+  voice.oscillator.addEventListener('ended', () => vibratoDepth.disconnect(voice.detune));
+  activeSynth = activeSynth.filter(({ stopAt }) => stopAt > audio.currentTime);
+  activeSynth.push(voice);
   while (activeSynth.length > MAX_SYNTH_VOICES) {
-    const { gain, time: start } = activeSynth.shift();
-    const at = Math.max(time, start);
-    gain.gain.cancelScheduledValues(at);
-    gain.gain.setTargetAtTime(SILENCE, at, STEAL_FADE_SECONDS);
+    const stolen = activeSynth.shift();
+    stolen.release(Math.max(time, stolen.time), STEAL_FADE_SECONDS);
+    for (const [heldTag, heldVoice] of heldSynth) {
+      if (heldVoice === stolen) heldSynth.delete(heldTag);
+    }
+    emit({ time: audio.currentTime, type: 'release', voiceId: stolen.id });
   }
   counts.synth++;
   emit({ time, type: 'sound', voice: 'synth', hz, tag });
+  return voice.id;
+}
+
+function releaseSynth(tag) {
+  const voice = heldSynth.get(tag);
+  if (!voice) return;
+  heldSynth.delete(tag);
+  voice.release(audio.currentTime);
+  emit({ time: audio.currentTime, type: 'release', voiceId: voice.id });
+}
+
+function releaseAllSynth() {
+  for (const tag of [...heldSynth.keys()]) releaseSynth(tag);
 }
 
 function playDrumKey(index, tag) {
@@ -390,7 +550,7 @@ function playVisitor(index, tag) {
 
 function playMouseNote(degree) {
   const time = nextGridTime();
-  const hz = midiToHz(scaleMidi(groove().rootMidi + MOUSE_OCTAVES_ABOVE_ROOT, degree));
+  const hz = midiToHz(scaleMidi(MOUSE_OCTAVES_ABOVE_ROOT, degree));
   playTone(time, hz, PATCHES.blip, BLIP_SECONDS);
   counts.mouse++;
   emit({ time, type: 'sound', voice: 'mouse', hz });
@@ -400,31 +560,30 @@ function playMouseNote(degree) {
 // Clicks, the wheel and keys without another job: a Tiny Draw-style blip.
 function playBlip(degree, tag) {
   const time = nextGridTime();
-  const hz = midiToHz(scaleMidi(groove().rootMidi + BLIP_OCTAVES_ABOVE_ROOT, degree));
+  const hz = midiToHz(scaleMidi(BLIP_OCTAVES_ABOVE_ROOT, degree));
   playTone(time, hz, PATCHES.blip, BLIP_SECONDS);
   counts.blip++;
   emit({ time, type: 'sound', voice: 'blip', hz, tag });
 }
 
-// Space: the original's pitch bend. With no note sounding there is nothing to
-// bend, so it boings instead.
-function bend(tag) {
+// Space held: vibrato on every synth note, including ones started while it's down.
+// With no note sounding there is nothing to wobble, so it plays a short wobble itself.
+function startVibrato(tag) {
   const now = audio.currentTime;
-  activeSynth = activeSynth.filter((voice) => voice.stopAt > now);
-  for (const { detune } of activeSynth) {
-    detune.cancelScheduledValues(now);
-    detune.setValueAtTime(detune.value, now);
-    detune.linearRampToValueAtTime(BEND_CENTS, now + BEND_UP_SECONDS);
-    detune.linearRampToValueAtTime(0, now + BEND_UP_SECONDS + BEND_DOWN_SECONDS);
-  }
+  sequencer.vibrato = true;
+  vibratoDepth.gain.setTargetAtTime(VIBRATO_CENTS, now, VIBRATO_RAMP_SECONDS);
   let hz = null;
-  if (!activeSynth.length) {
-    const root = midiToHz(groove().rootMidi + SYNTH_OCTAVE_ABOVE_ROOT);
-    hz = root * 2;
-    playTone(now, root, PATCHES.boing, BEND_UP_SECONDS + BEND_DOWN_SECONDS, hz);
+  if (!heldSynth.size) {
+    hz = midiToHz(rootMidi() + SYNTH_OCTAVE_ABOVE_ROOT * 2);
+    playTone(now, hz, PATCHES.wobble, BLIP_SECONDS * 3);
   }
-  counts.bend++;
-  emit({ time: now, type: 'sound', voice: 'bend', hz, tag });
+  counts.vibrato++;
+  emit({ time: now, type: 'sound', voice: 'vibrato', hz, tag });
+}
+
+function stopVibrato() {
+  sequencer.vibrato = false;
+  vibratoDepth.gain.setTargetAtTime(0, audio.currentTime, VIBRATO_RAMP_SECONDS);
 }
 
 // Shift: the original's drum roll, on whichever drum was hit last.
@@ -447,4 +606,13 @@ function setGroove(index) {
 
 function nudgeTempo(direction) {
   sequencer.bpm = Math.min(MAX_BPM, Math.max(MIN_BPM, sequencer.bpm + direction * BPM_STEP));
+}
+
+function nextBassLine() {
+  sequencer.bassLine = (sequencer.bassLine + 1) % BASS_LINE_COUNT;
+}
+
+// Left/Right: everything pitched (bass, synth, mouse, blips) moves by a semitone.
+function transpose(direction) {
+  sequencer.transpose = Math.min(TRANSPOSE_LIMIT, Math.max(-TRANSPOSE_LIMIT, sequencer.transpose + direction));
 }

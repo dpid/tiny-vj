@@ -69,6 +69,31 @@ app.on('browser-window-created', (_, win) => {
       await press('a');
       const afterA = await probe();
       check('a real key press plays a drum', () => assert.equal(afterA.counts.drum, beforeA.counts.drum + 1));
+      await send({ type: 'keyDown', keyCode: 'q' });
+      await delay(400);
+      const holdingQ = await probe();
+      await send({ type: 'keyUp', keyCode: 'q' });
+      await delay(200);
+      const releasedQ = await probe();
+      check('a real held key sustains its note until the real key-up', () => {
+        assert.deepEqual(holdingQ.held, ['KeyQ']);
+        assert.deepEqual(releasedQ.held, []);
+      });
+      await send({ type: 'keyDown', keyCode: 'Space' });
+      await delay(300);
+      const spaceDown = await probe();
+      await send({ type: 'keyUp', keyCode: 'Space' });
+      await delay(300);
+      const spaceUp = await probe();
+      check('real Space held turns vibrato on, and off on its key-up', () => {
+        assert.equal(spaceDown.vibrato, true);
+        assert.equal(spaceUp.vibrato, false);
+      });
+      await press('w', ['meta']);
+      await delay(200);
+      const afterCmdW = await probe();
+      check('a Cmd chord on a synth key plays a quick note, not a stuck one', () =>
+        assert.deepEqual(afterCmdW.held, []));
       await press('f', ['meta']);
       const afterChord = await probe();
       check('a modifier combination still reaches the page and makes a sound', () =>
@@ -84,7 +109,8 @@ app.on('browser-window-created', (_, win) => {
       await press('Escape');
       const cleared = await probe();
       check('a real Escape starts a fresh drawing and blips', () => {
-        assert.equal(cleared.drawingSteps, 0);
+        // The groove may draw one step between the key-up and this probe.
+        assert.ok(cleared.drawingSteps <= 1, `${cleared.drawingSteps} steps`);
         assert.equal(cleared.counts.blip, beforeEscape.counts.blip + 1);
       });
       const lockedRightAfterEscape = cleared.pointerLocked;
